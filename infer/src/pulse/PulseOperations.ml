@@ -280,6 +280,37 @@ let prune path location ~condition astate =
   in
   prune_aux ~negated:false condition astate
 
+  let prune_insecsl path location ~condition astate =
+    let rec prune_aux ~negated exp astate =
+      match (exp : Exp.t) with
+      | BinOp (bop, exp_lhs, exp_rhs) ->
+          let** astate, lhs_op, lhs_hist = eval_to_operand path location exp_lhs astate in
+          let** astate_before_prune, rhs_op, rhs_hist = eval_to_operand path location exp_rhs astate in
+          let** astatex = PulseArithmetic.prune_binop ~negated:(not negated) bop lhs_op rhs_op astate_before_prune in
+          let++ astate = PulseArithmetic.prune_binop ~negated bop lhs_op rhs_op astate_before_prune in
+          let errstates: t list  = 
+            (let errstate = PulseArithmetic.prune_binop_insecsl bop lhs_op rhs_op astate_before_prune in
+             match errstate with
+             | Sat (Ok errstate) ->
+                [errstate] | _ -> []) in
+
+          let hist =
+            match (lhs_hist, rhs_hist) with
+            | ValueHistory.Epoch, hist | hist, ValueHistory.Epoch ->
+                (* if one history is empty then just propagate the other one (which could also be
+                   empty) *)
+                hist
+            | _ ->
+                ValueHistory.binary_op bop lhs_hist rhs_hist
+          in
+          (Ok (astate, hist)) :: (List.map errstates ~f:(fun errtate -> FatalError ((InsecSLError {astate = errtate; must_be_sat = astate :: astatex :: [];
+                                                                                                   location = location; address = hist}), [])))
+      | UnOp (LNot, exp', _) ->
+          prune_aux ~negated:(not negated) exp' astate
+      | exp ->
+          prune_aux ~negated (Exp.BinOp (Ne, exp, Exp.zero)) astate
+    in
+    prune_aux ~negated:false condition astate
 
 let eval_deref path ?must_be_valid_reason location exp astate =
   let+* astate, addr_hist = eval path Read location exp astate in

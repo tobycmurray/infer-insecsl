@@ -31,6 +31,8 @@ val list_fold : 'a list -> init:'accum -> f:('accum -> 'a -> 'accum t) -> 'accum
 
 val to_list : 'a t -> 'a list
 
+val reduce : 'a t list -> 'a list t
+
 val filter : 'a t list -> 'a list
 (** keep only [Sat _] elements *)
 

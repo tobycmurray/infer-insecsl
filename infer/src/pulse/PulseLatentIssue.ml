@@ -37,6 +37,7 @@ let add_call_to_access_to_invalid_address call_subst astate invalid_access =
 
 type t =
   | AccessToInvalidAddress of Diagnostic.access_to_invalid_address
+  | InformationLeak of Diagnostic.information_leak
   | ErlangError of Diagnostic.ErlangError.t
   | ReadUninitializedValue of Diagnostic.read_uninitialized_value
 [@@deriving compare, equal, yojson_of]
@@ -48,6 +49,8 @@ let to_diagnostic = function
       Diagnostic.ErlangError erlang_error
   | ReadUninitializedValue read_uninitialized_value ->
       Diagnostic.ReadUninitializedValue read_uninitialized_value
+  | InformationLeak information_leak ->
+      Diagnostic.InformationLeak information_leak
 
 
 let pp fmt latent_issue = Diagnostic.pp fmt (to_diagnostic latent_issue)
@@ -75,6 +78,8 @@ let add_call_to_calling_context call_and_loc = function
       ErlangError (Try_clause {calling_context= call_and_loc :: calling_context; location})
   | ReadUninitializedValue read ->
       ReadUninitializedValue {read with calling_context= call_and_loc :: read.calling_context}
+  | InformationLeak leak -> 
+    InformationLeak {leak with calling_context= call_and_loc :: leak.calling_context}
 
 
 let add_call call_and_loc call_subst astate latent_issue =
@@ -115,6 +120,11 @@ let should_report (astate : AbductiveDomain.summary) (diagnostic : Diagnostic.t)
       `ReportNow
   | AccessToInvalidAddress latent ->
       if is_manifest astate then `ReportNow else `DelayReport (AccessToInvalidAddress latent)
+  | InformationLeak latent ->
+    if is_manifest astate then 
+        `ReportNow 
+    else 
+        `DelayReport (InformationLeak latent)
   | ErlangError latent ->
       if is_manifest astate then `ReportNow else `DelayReport (ErlangError latent)
   | ReadUninitializedValue latent ->

@@ -70,6 +70,8 @@ val and_is_int : Var.t -> t -> (t * new_eqs) SatUnsat.t
 
 val prune_binop : negated:bool -> Binop.t -> operand -> operand -> t -> (t * new_eqs) SatUnsat.t
 
+val prune_binop_insecsl : Binop.t -> operand -> operand -> t -> (t * new_eqs) SatUnsat.t
+
 (** {3 Operations} *)
 
 val normalize : Tenv.t -> get_dynamic_type:(Var.t -> Typ.t option) -> t -> (t * new_eqs) SatUnsat.t

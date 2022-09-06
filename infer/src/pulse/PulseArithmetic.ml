@@ -81,6 +81,8 @@ let eval_unop ret unop v astate =
 let prune_binop ~negated binop lhs rhs astate =
   map_path_condition astate ~f:(fun phi -> Formula.prune_binop ~negated binop lhs rhs phi)
 
+let prune_binop_insecsl binop lhs rhs astate =
+  map_path_condition astate ~f:(fun phi -> Formula.prune_binop_insecsl binop lhs rhs phi)
 
 let literal_zero = ConstOperand (Cint IntLit.zero)
 

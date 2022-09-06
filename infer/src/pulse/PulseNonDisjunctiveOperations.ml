@@ -115,6 +115,7 @@ let add_copies tenv path location call_exp actuals astates astate_non_disj =
                        default )
         | ExceptionRaised _, _, _
         | ISLLatentMemoryError _, _, _
+        | InsecSLLeakageError _, _, _
         | AbortProgram _, _, _
         | ContinueProgram _, _, _
         | ExitProgram _, _, _
@@ -153,6 +154,7 @@ let add_const_refable_parameters procdesc tenv astates astate_non_disj =
                   astate_non_disj
               else astate_non_disj )
       | ISLLatentMemoryError _
+      | InsecSLLeakageError _
       | AbortProgram _
       | ExceptionRaised _
       | ExitProgram _
@@ -287,6 +289,7 @@ let mark_modified_copies_and_parameters vars disjuncts astate_n =
   List.fold disjuncts ~init:astate_n ~f:(fun astate_n (exec_state : ExecutionDomain.t) ->
       match exec_state with
       | ISLLatentMemoryError _
+      | InsecSLLeakageError _
       | AbortProgram _
       | ExceptionRaised _
       | ExitProgram _

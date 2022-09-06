@@ -17,6 +17,7 @@ module Diagnostic = PulseDiagnostic
 
 type t =
   | AccessToInvalidAddress of Diagnostic.access_to_invalid_address
+  | InformationLeak of Diagnostic.information_leak
   | ErlangError of Diagnostic.ErlangError.t
   | ReadUninitializedValue of Diagnostic.read_uninitialized_value
 [@@deriving compare, equal, yojson_of]

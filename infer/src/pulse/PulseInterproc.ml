@@ -856,6 +856,28 @@ let check_all_taint_valid path callee_proc_name call_location pre_post astate ca
     call_state.subst (Ok astate)
 
 
+let insecsl_check_insecure ~(insecsl_sats:(AbductiveDomain.summary,'a) result sat_unsat_t list ) ~insecsl_trace callee_proc_name call_location astate =
+  let sats = SatUnsat.reduce insecsl_sats in
+  match sats with 
+  | Unsat -> Ok astate
+  | Sat sats -> 
+  let sats = List.map sats ~f:(fun x -> match x with Result.Ok a -> a | _ -> assert false) in
+    if List.length sats > 0 then
+      match insecsl_trace with | None -> assert false | Some tr ->
+    FatalError
+                ( AccessResult.ReportableError
+                    { diagnostic=
+                        Diagnostic.InformationLeak
+                          { calling_context=[(Call callee_proc_name,call_location)]
+                          ; trace=tr
+                          ; must_be_sat=sats }
+                    ; astate }
+                , [] )
+      else Ok astate
+
+
+
+
 let isl_check_all_invalid invalid_addr_callers callee_proc_name call_location
     {AbductiveDomain.pre; _} pre_astate astate =
   AbstractValue.Map.fold
@@ -906,7 +928,7 @@ let isl_check_all_invalid invalid_addr_callers callee_proc_name call_location
    - for each actual, write the post for that actual
 
    - if aliasing is introduced at any time then give up *)
-let apply_prepost path ~is_isl_error_prepost callee_proc_name call_location ~callee_prepost:pre_post
+let apply_prepost path ~is_isl_error_prepost ~insecsl_sats ~insecsl_trace callee_proc_name call_location ~callee_prepost:pre_post
     ~captured_formals ~captured_actuals ~formals ~actuals astate =
   L.d_printfln "Applying pre/post for %a(%a):@\n%a" Procname.pp callee_proc_name
     (Pp.seq ~sep:"," (fun f (var, _) -> Var.pp f var))
@@ -969,7 +991,10 @@ let apply_prepost path ~is_isl_error_prepost callee_proc_name call_location ~cal
         let+ astate =
           if is_isl_error_prepost then
             isl_check_all_invalid invalid_subst callee_proc_name call_location pre_post pre_astate
-              astate
+              astate >>=
+              (fun astate -> 
+               (* TODO: insecurity checks only happen when memory errors are not detected at present *)
+               insecsl_check_insecure ~insecsl_sats ~insecsl_trace callee_proc_name call_location astate)
           else
             (* This has to happen after the post has been applied so that we are aware of any
                sanitizers applied to tainted values too, otherwise we'll report false positives if

@@ -98,6 +98,9 @@ module Import : sig
         ; must_be_valid: Trace.t * Invalidation.must_be_valid_reason option
         ; calling_context: (CallEvent.t * Location.t) list }
     | ISLLatentMemoryError of AbductiveDomain.summary
+    | InsecSLLeakageError of { astate: AbductiveDomain.summary
+                             ; must_be_sat: AbductiveDomain.summary list
+                             ; trace: Trace.t }
 
   type base_summary_error = AccessResult.summary_error =
     | PotentialInvalidAccessSummary of
@@ -106,6 +109,9 @@ module Import : sig
         ; must_be_valid: Trace.t * Invalidation.must_be_valid_reason option }
     | ReportableErrorSummary of {astate: AbductiveDomain.summary; diagnostic: Diagnostic.t}
     | ISLErrorSummary of {astate: AbductiveDomain.summary}
+    | InsecSLErrorSummary of {astate: AbductiveDomain.summary
+                             ; must_be_sat: AbductiveDomain.summary list
+                             ; trace: Trace.t}
 
   type base_error = AccessResult.error =
     | PotentialInvalidAccess of
@@ -114,5 +120,9 @@ module Import : sig
         ; must_be_valid: Trace.t * Invalidation.must_be_valid_reason option }
     | ReportableError of {astate: AbductiveDomain.t; diagnostic: Diagnostic.t}
     | ISLError of {astate: AbductiveDomain.t}
+    | InsecSLError of {astate: AbductiveDomain.t
+                      ; must_be_sat: AbductiveDomain.t list
+                      ; location: Location.t
+                      ; address: ValueHistory.t}
     | Summary of base_summary_error
 end

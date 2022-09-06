@@ -101,7 +101,8 @@ let is_constant_deref_without_invalidation_diagnostic (diagnostic : Diagnostic.t
   | ReadUninitializedValue _
   | StackVariableAddressEscape _
   | TaintFlow _
-  | UnnecessaryCopy _ ->
+  | UnnecessaryCopy _
+  | InformationLeak _ ->
       false
   | AccessToInvalidAddress {invalidation; access_trace} ->
       is_constant_deref_without_invalidation invalidation access_trace
@@ -168,7 +169,18 @@ let summary_error_of_error tenv proc_desc location (error : AccessResult.error) 
         astate
   | ISLError {astate} ->
       summary_of_error_post tenv proc_desc location (fun astate -> ISLErrorSummary {astate}) astate
-
+  | InsecSLError {astate; must_be_sat; location; address} ->
+      let must_be_sat_summs = List.map ~f:(AbductiveDomain.summary_of_post tenv
+      (Procdesc.get_proc_name proc_desc)
+      (Procdesc.get_attributes proc_desc)
+      location) must_be_sat in
+      match SatUnsat.reduce must_be_sat_summs with
+      | Unsat -> Unsat
+      | Sat must_be_sat ->
+        let must_be_sat = List.map must_be_sat ~f:(fun res -> match res with | Result.Ok a -> a | _ -> assert false) in
+        summary_of_error_post tenv proc_desc location (fun astate -> InsecSLErrorSummary {astate; must_be_sat; trace= Immediate {location= location; history= address}}) astate
+  
+  
 
 let report_summary_error tenv proc_desc err_log (access_error : AccessResult.summary_error) :
     ExecutionDomain.summary option =
@@ -197,6 +209,8 @@ let report_summary_error tenv proc_desc err_log (access_error : AccessResult.sum
       Some (LatentInvalidAccess {astate; address; must_be_valid; calling_context= []})
   | ISLErrorSummary {astate} ->
       Some (ISLLatentMemoryError astate)
+  | InsecSLErrorSummary {astate; must_be_sat; trace} ->
+        Some (InsecSLLeakageError {astate; must_be_sat; trace})      
   | ReportableErrorSummary {astate; diagnostic} -> (
       let is_nullptr_dereference =
         match diagnostic with AccessToInvalidAddress _ -> true | _ -> false

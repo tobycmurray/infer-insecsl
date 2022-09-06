@@ -78,6 +78,13 @@ val prune :
   -> t
   -> (t * ValueHistory.t) AccessResult.t SatUnsat.t
 
+val prune_insecsl :
+   PathContext.t
+-> Location.t
+-> condition:Exp.t
+-> t
+-> ((t * ValueHistory.t) AccessResult.t list) AccessResult.t SatUnsat.t
+
 val eval_deref :
      PathContext.t
   -> ?must_be_valid_reason:Invalidation.must_be_valid_reason

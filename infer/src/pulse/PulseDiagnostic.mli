@@ -56,10 +56,17 @@ type read_uninitialized_value =
             value *) }
 [@@deriving compare, equal, yojson_of]
 
+type information_leak =
+  { calling_context: calling_context
+  ; trace: Trace.t
+  ; must_be_sat: PulseAbductiveDomain.summary list }
+[@@deriving compare, equal, yojson_of]
+
 type flow_kind = TaintedFlow | FlowToSink | FlowFromSource [@@deriving equal]
 
 (** an error to report to the user *)
 type t =
+  | InformationLeak of information_leak
   | AccessToInvalidAddress of access_to_invalid_address
   | ConstRefableParameter of {param: Var.t; typ: Typ.t; location: Location.t}
   | MemoryLeak of {allocator: Attribute.allocator; allocation_trace: Trace.t; location: Location.t}

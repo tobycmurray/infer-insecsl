@@ -99,6 +99,10 @@ let pp_read_uninitialized_value fmt ({calling_context; trace} [@warning "+9"]) =
     (Trace.pp ~pp_immediate:(fun fmt -> F.pp_print_string fmt "immediate"))
     trace
 
+type information_leak = {calling_context: calling_context; trace: Trace.t; must_be_sat: PulseAbductiveDomain.summary list}
+[@@deriving compare, equal]
+
+let yojson_of_information_leak = [%yojson_of: _]
 
 type flow_kind = TaintedFlow | FlowToSink | FlowFromSource [@@deriving equal]
 
@@ -113,6 +117,7 @@ let pp_flow_kind fmt flow_kind =
 
 
 type t =
+  | InformationLeak of information_leak
   | AccessToInvalidAddress of access_to_invalid_address
   | ConstRefableParameter of {param: Var.t; typ: Typ.t; location: Location.t}
   | MemoryLeak of {allocator: Attribute.allocator; allocation_trace: Trace.t; location: Location.t}
@@ -140,7 +145,13 @@ type t =
 
 let pp fmt diagnostic =
   let pp_immediate fmt = F.pp_print_string fmt "immediate" in
+  let rec pp_must_be_sat fmt (must_be_sat:PulseAbductiveDomain.summary list) = 
+    match must_be_sat with
+    | [] -> F.fprintf fmt ""
+    | (x::xs) -> F.fprintf fmt "@[must_be_sat=%a@] %a" PulseAbductiveDomain.pp (x :> PulseAbductiveDomain.t) pp_must_be_sat xs
+  in
   match[@warning "+9"] diagnostic with
+  | InformationLeak {calling_context; trace; must_be_sat} -> F.fprintf fmt "InformationLeak {@[calling_context=%a@]; @[trace=%a@]; @[%a@]}" pp_calling_context calling_context (Trace.pp ~pp_immediate) trace pp_must_be_sat must_be_sat
   | AccessToInvalidAddress access_to_invalid_address ->
       F.fprintf fmt "AccessToInvalidAddress %a" pp_access_to_invalid_address
         access_to_invalid_address
@@ -191,7 +202,9 @@ let get_location = function
   | AccessToInvalidAddress {calling_context= (_, location) :: _}
   | ReadUninitializedValue {calling_context= (_, location) :: _} ->
       (* report at the call site that triggers the bug *) location
-  | ConstRefableParameter {location}
+  | ConstRefableParameter {location} -> location
+  | InformationLeak {calling_context=_callling_context; trace; _} ->
+      Trace.get_outer_location trace
   | MemoryLeak {location}
   | ResourceLeak {location}
   | RetainCycle {location}
@@ -213,6 +226,7 @@ let get_location = function
 let get_copy_type = function UnnecessaryCopy {typ} -> Some typ | _ -> None
 
 let aborts_execution = function
+  | InformationLeak _ (* no need to keep analysing *)
   | AccessToInvalidAddress _
   | ErlangError
       ( Badarg _
@@ -421,6 +435,14 @@ let get_message diagnostic =
       F.asprintf "no true branch in if expression at %a" Location.pp location
   | ErlangError (Try_clause {calling_context= _; location}) ->
       F.asprintf "no matching branch in try at %a" Location.pp location
+  | InformationLeak {calling_context} -> 
+    let rec pp_leak_context fmt calling_context =
+      match calling_context with
+      | [] -> ()
+      | (f,location)::context ->
+        F.fprintf fmt "@[%a is called at location %a; @[%a@]@]" CallEvent.describe f Location.pp location pp_leak_context context
+    in
+      F.asprintf "information leak at %a:@[%a@]" Location.pp (get_location diagnostic) pp_leak_context calling_context
   | ReadUninitializedValue {calling_context; trace} ->
       let root_var =
         Trace.find_map trace ~f:(function VariableDeclared (pvar, _, _) -> Some pvar | _ -> None)
@@ -572,6 +594,9 @@ let add_access_trace ~include_title ~nesting invalidation access_trace errlog =
 
 
 let get_trace = function
+  | InformationLeak {trace=_trace; calling_context} as blah ->  
+    get_trace_calling_context calling_context
+    @@ [Errlog.make_trace_element 0 (get_location blah) "information leak" []]
   | AccessToInvalidAddress {calling_context; invalidation; invalidation_trace; access_trace} ->
       let in_context_nesting = List.length calling_context in
       let should_print_invalidation_trace = not (Trace.has_invalidation access_trace) in
@@ -669,6 +694,7 @@ let get_trace = function
 
 let get_issue_type ~latent issue_type =
   match (issue_type, latent) with
+  | InformationLeak _, _ -> IssueType.pulse_information_leak
   | ConstRefableParameter _, false ->
       IssueType.pulse_const_refable
   | MemoryLeak {allocator}, false -> (

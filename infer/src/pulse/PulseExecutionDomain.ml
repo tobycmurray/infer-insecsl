@@ -29,6 +29,9 @@ type 'abductive_domain_t base_t =
       ; must_be_valid: (Trace.t * Invalidation.must_be_valid_reason option[@yojson.opaque])
       ; calling_context: ((CallEvent.t * Location.t) list[@yojson.opaque]) }
   | ISLLatentMemoryError of AbductiveDomain.summary
+  | InsecSLLeakageError of { astate: AbductiveDomain.summary
+                           ; must_be_sat: AbductiveDomain.summary list
+                           ; trace: (Trace.t[@yojson.opaque]) }
 [@@deriving equal, compare, yojson_of]
 
 type t = AbductiveDomain.t base_t
@@ -69,6 +72,8 @@ let pp fmt = function
       F.fprintf fmt "{ExitProgram %a}" AbductiveDomain.pp (astate :> AbductiveDomain.t)
   | ISLLatentMemoryError astate ->
       F.fprintf fmt "{ISLLatentMemoryError %a}" AbductiveDomain.pp (astate :> AbductiveDomain.t)
+  | InsecSLLeakageError {astate;_} ->
+      F.fprintf fmt "{InsecSLLeakageError %a}" AbductiveDomain.pp (astate :> AbductiveDomain.t)
   | LatentAbortProgram {astate; latent_issue} ->
       let diagnostic = LatentIssue.to_diagnostic latent_issue in
       let message = Diagnostic.get_message diagnostic in

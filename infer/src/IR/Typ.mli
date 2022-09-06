@@ -40,7 +40,7 @@ type ikind =
   | IULongLong  (** [unsigned long long] (or [unsigned _int64] on Microsoft Visual C) *)
   | I128  (** [__int128_t] *)
   | IU128  (** [__uint128_t] *)
-[@@deriving compare]
+[@@deriving compare, yojson_of]
 
 val equal_ikind : ikind -> ikind -> bool
 

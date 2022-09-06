@@ -249,7 +249,8 @@ module Basic = struct
           | AbortProgram _
           | LatentAbortProgram _
           | LatentInvalidAccess _
-          | ISLLatentMemoryError _ ->
+          | ISLLatentMemoryError _ 
+          | InsecSLLeakageError _ ->
               [Ok exec_state] )
     in
     let astate_zero =

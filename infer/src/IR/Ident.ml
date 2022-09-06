@@ -39,7 +39,7 @@ module Name = struct
         s
 end
 
-type name = Name.t [@@deriving compare, equal]
+type name = Name.t [@@deriving compare, equal, yojson_of]
 
 let name_spec = Name.Spec
 

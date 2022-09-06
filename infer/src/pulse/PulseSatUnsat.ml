@@ -43,6 +43,9 @@ let of_result = function Error () -> Unsat | Ok x -> Sat x
 let list_fold l ~init ~f =
   List.fold_result l ~init ~f:(fun accum x -> f accum x |> to_result) |> of_result
 
+let reduce xs =
+  List.fold xs ~init:(Sat []) ~f:(fun lst x -> match lst with | Unsat -> Unsat | Sat xs -> match x with | Unsat -> Unsat | Sat a -> Sat (a::xs))
+
 
 let to_list sat_unsat = sat sat_unsat |> Option.to_list
 

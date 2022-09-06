@@ -18,6 +18,9 @@ type summary_error =
       ; must_be_valid: Trace.t * Invalidation.must_be_valid_reason option }
   | ReportableErrorSummary of {astate: AbductiveDomain.summary; diagnostic: Diagnostic.t}
   | ISLErrorSummary of {astate: AbductiveDomain.summary}
+  | InsecSLErrorSummary of {astate: AbductiveDomain.summary
+                           ; must_be_sat: AbductiveDomain.summary list
+                           ; trace: Trace.t}
 
 type error =
   | PotentialInvalidAccess of
@@ -26,6 +29,10 @@ type error =
       ; must_be_valid: Trace.t * Invalidation.must_be_valid_reason option }
   | ReportableError of {astate: AbductiveDomain.t; diagnostic: Diagnostic.t}
   | ISLError of {astate: AbductiveDomain.t}
+  | InsecSLError of {astate: AbductiveDomain.t
+                    ; must_be_sat:AbductiveDomain.t list
+                    ; location: Location.t
+                    ; address: ValueHistory.t} 
   | Summary of summary_error
 
 type 'a t = ('a, error) PulseResult.t

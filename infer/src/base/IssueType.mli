@@ -151,6 +151,8 @@ val config_impact_analysis_strict_beta : t
 
 val pulse_const_refable : t
 
+val pulse_information_leak : t
+
 val constant_address_dereference : latent:bool -> t
 
 val create_intent_from_uri : t

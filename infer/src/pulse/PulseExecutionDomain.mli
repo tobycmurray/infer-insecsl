@@ -30,6 +30,11 @@ type 'abductive_domain_t base_t =
   | ISLLatentMemoryError of AbductiveDomain.summary
       (** represents the state at the program point that might cause an error; used for
           {!Config.pulse_isl} *)
+  | InsecSLLeakageError of { astate: AbductiveDomain.summary
+                           ; must_be_sat: AbductiveDomain.summary list
+                           ; trace: Trace.t }
+      (** represents the state at the program point that, if satisfiable, leaks inforation; used
+          for {!Config.pulse_isl} *)
 
 type t = AbductiveDomain.t base_t
 

@@ -41,7 +41,7 @@ type operand =
   | AbstractValueOperand of Var.t
   | ConstOperand of Const.t
   | FunctionApplicationOperand of {f: function_symbol; actuals: Var.t list}
-[@@deriving compare, equal]
+[@@deriving compare, equal, yojson_of]
 
 let pp_operand fmt = function
   | AbstractValueOperand v ->
@@ -428,6 +428,8 @@ module Term = struct
     | BitXor of t * t
     | IsInstanceOf of Var.t * Typ.t
     | IsInt of t
+    | Sec of t * t
+    | Insec of t * t
   [@@deriving compare, equal, yojson_of]
 
   let equal_syntax = equal
@@ -468,6 +470,8 @@ module Term = struct
     | Equal _
     | NotEqual _
     | IsInstanceOf _
+    | Sec _
+    | Insec _
     | IsInt _ ->
         true
 
@@ -537,6 +541,10 @@ module Term = struct
         F.fprintf fmt "(%a instanceof %a)" pp_var v (Typ.pp Pp.text) t
     | IsInt t ->
         F.fprintf fmt "is_int(%a)" (pp_no_paren pp_var) t
+    | Sec (t1, t2) ->
+        F.fprintf fmt "%a::%a" (pp_paren pp_var ~needs_paren) t1 (pp_paren pp_var ~needs_paren) t2
+    | Insec (t1, t2) ->
+        F.fprintf fmt "%a:!:%a" (pp_paren pp_var ~needs_paren) t1 (pp_paren pp_var ~needs_paren) t2
 
 
   let of_q q = Const q
@@ -674,6 +682,8 @@ module Term = struct
     | LessThan (t1, t2)
     | LessEqual (t1, t2)
     | Equal (t1, t2)
+    | Sec (t1, t2)
+    | Insec (t1, t2)
     | NotEqual (t1, t2) ->
         let acc, t1' = f init t1 in
         let acc, t2' = f acc t2 in
@@ -713,6 +723,10 @@ module Term = struct
                 Equal (t1', t2')
             | NotEqual _ ->
                 NotEqual (t1', t2')
+            | Sec _ ->
+                Sec (t1', t2')
+            | Insec _ ->
+                Insec (t1',t2')
         in
         (acc, t')
 
@@ -773,6 +787,8 @@ module Term = struct
     | LessEqual _
     | Equal _
     | NotEqual _
+    | Sec _
+    | Insec _
     | Mult _
     | DivI _
     | DivF _
@@ -875,6 +891,10 @@ module Term = struct
           q_predicate_map2 t1 t2 Q.equal
       | NotEqual (t1, t2) ->
           q_predicate_map2 t1 t2 Q.not_equal
+      | Sec (_, _) ->
+          Const Q.one (* tautology: constants are always known *)
+      | Insec ( _, _) ->
+          Const Q.zero (* fallacy: constants are never unknown *)
       | BitAnd (t1, t2)
       | BitOr (t1, t2)
       | BitShiftLeft (t1, t2)
@@ -1076,6 +1096,8 @@ module Term = struct
       | Equal _
       | NotEqual _
       | IsInstanceOf _
+      | Sec _
+      | Insec _       
       | IsInt _ ->
           None
     in
@@ -1123,6 +1145,8 @@ module Term = struct
     | BitShiftRight _
     | BitXor _
     | IsInstanceOf _
+    | Sec _
+    | Insec _ 
     | IsInt _ ->
         None
 
@@ -1161,6 +1185,8 @@ module Atom = struct
     | LessThan of Term.t * Term.t
     | Equal of Term.t * Term.t
     | NotEqual of Term.t * Term.t
+    | Sec of Term.t * Term.t
+    | Insec of Term.t * Term.t
   [@@deriving compare, equal, yojson_of]
 
   let pp_with_pp_var pp_var fmt atom =
@@ -1178,11 +1204,20 @@ module Atom = struct
         F.fprintf fmt "%a = %a" pp_term t1 pp_term t2
     | NotEqual (t1, t2) ->
         F.fprintf fmt "%a ≠ %a" pp_term t1 pp_term t2
+    | Sec (t1, t2) ->
+        F.fprintf fmt "%a :: %a" pp_term t1 pp_term t2
+    | Insec (t1, t2) ->
+        F.fprintf fmt "%a :!: %a" pp_term t1 pp_term t2
 
 
   let get_terms atom =
-    let (LessEqual (t1, t2) | LessThan (t1, t2) | Equal (t1, t2) | NotEqual (t1, t2)) = atom in
-    (t1, t2)
+    match atom with
+    | LessEqual (t1, t2)
+    | LessThan (t1, t2)
+    | Equal (t1, t2)
+    | NotEqual (t1, t2)
+    | Sec (t1, t2) -> (t1, t2)
+    | Insec (t1, t2) -> (t1, t2)
 
 
   (** preserve physical equality if [f] does *)
@@ -1202,6 +1237,10 @@ module Atom = struct
             Equal (t1', t2')
         | NotEqual _ ->
             NotEqual (t1', t2')
+        | Sec _ ->
+            Sec (t1', t2')
+        | Insec _ ->
+            Insec (t1', t2')
     in
     (acc, t')
 
@@ -1233,6 +1272,10 @@ module Atom = struct
         LessThan (t2, t1)
     | LessThan (t1, t2) ->
         LessEqual (t2, t1)
+    | Sec (t1, t2) ->
+        Insec (t1, t2)
+    | Insec (t1, t2) ->
+        Sec (t1, t2)
 
 
   let map_terms atom ~f = fold_map_terms atom ~init:() ~f:(fun () t -> ((), f t)) |> snd
@@ -1249,6 +1292,10 @@ module Atom = struct
         Equal (t1, t2)
     | NotEqual (t1, t2) ->
         NotEqual (t1, t2)
+    | Sec (t1, t2) ->
+        Sec (t1, t2)
+    | Insec (t1, t2) ->
+        Insec (t1, t2)
 
 
   type eval_result = True | False | Atom of t
@@ -1282,6 +1329,10 @@ module Atom = struct
         Some (Equal (t1, t2))
     | NotEqual (t1, t2) ->
         Some (NotEqual (t1, t2))
+    | Sec (t1, t2) ->
+        Some (Sec (t1, t2))
+    | Insec (t1, t2) ->
+        Some (Insec (t1, t2))
     | _ ->
         None
 
@@ -1305,6 +1356,10 @@ module Atom = struct
         on_const Q.leq
     | LessThan _ ->
         on_const Q.lt
+    | Sec _ ->
+        on_const (fun _ _ -> true)
+    | Insec _ ->
+        on_const (fun _ _ -> false)
 
 
   let get_as_linear atom =
@@ -1312,16 +1367,16 @@ module Atom = struct
     | Linear l1, Linear l2 ->
         let l = LinArith.subtract l1 l2 in
         let t = Term.simplify_linear (Linear l) in
-        Some
-          ( match atom with
-          | Equal _ ->
-              Equal (t, Term.zero)
-          | NotEqual _ ->
-              NotEqual (t, Term.zero)
-          | LessEqual _ ->
-              LessEqual (t, Term.zero)
-          | LessThan _ ->
-              LessThan (t, Term.zero) )
+        (match atom with
+         | Equal _ ->
+              Some (Equal (t, Term.zero))
+         | NotEqual _ ->
+              Some (NotEqual (t, Term.zero))
+         | LessEqual _ ->
+              Some (LessEqual (t, Term.zero))
+         | LessThan _ ->
+              Some (LessThan (t, Term.zero) )
+         | _ -> None)
     | _ ->
         None
 
@@ -1364,6 +1419,11 @@ module Atom = struct
           True
       | LessThan _ ->
           False
+      (* since second in Sec/Insec assertions is constant for now, syntactic equality would mean first one is too *)
+      | Sec _ ->
+          True
+      | Insec _ ->
+          False 
     else Atom atom
 
 
@@ -1475,8 +1535,7 @@ let pp_new_eq fmt = function
       F.fprintf fmt "%a=0" Var.pp v
   | Equal (v1, v2) ->
       F.fprintf fmt "%a=%a" Var.pp v1 Var.pp v2
-
-
+ 
 type new_eqs = new_eq list
 
 module Formula = struct
@@ -2211,6 +2270,11 @@ let prune_binop ~negated (bop : Binop.t) x y formula =
   let atom = if negated then Atom.Equal (t, Term.zero) else Atom.NotEqual (t, Term.zero) in
   prune_atom atom (formula, [])
 
+let prune_binop_insecsl (bop : Binop.t) x y formula =
+  let tx = Term.of_operand x in
+  let ty = Term.of_operand y in
+  let t = Term.of_binop bop tx ty in
+  prune_atom (Atom.Insec (t, Term.zero)) (formula, [])
 
 module DynamicTypes = struct
   let evaluate_instanceof tenv ~get_dynamic_type v typ =
@@ -2586,6 +2650,9 @@ let is_known_non_zero formula v =
 let is_manifest ~is_allocated formula =
   Atom.Set.for_all
     (fun atom ->
+      match atom with
+      (* insecurity assertions disquality a state from being manifest *)
+      | Insec (_,_) -> false |  _ ->
       (* ignore [x≠0] when [x] is known to be allocated: pointers being allocated doesn't make an
          issue latent and we still need to remember that [x≠0] was tested by the program explicitly
       *)

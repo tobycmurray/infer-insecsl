@@ -32,6 +32,8 @@ type contradiction = private
 val apply_prepost :
      PathContext.t
   -> is_isl_error_prepost:bool
+  -> insecsl_sats:(AbductiveDomain.summary,'a) result sat_unsat_t list 
+  -> insecsl_trace:(Trace.t option)
   -> Procname.t
   -> Location.t
   -> callee_prepost:AbductiveDomain.t

@@ -926,6 +926,10 @@ let pulse_memory_leak_c =
     ~user_documentation:[%blob "../../documentation/issues/MEMORY_LEAK_C.md"]
 
 
+let pulse_information_leak =
+      register ~id:"PULSE_INFORMATION_LEAK" ~enabled:true Error Pulse ~hum:"Information Leak"
+        ~user_documentation:"TODO"
+
 let pulse_memory_leak_cpp =
   register ~id:"MEMORY_LEAK_CPP" ~hum:"Memory Leak" ~enabled:false Error Pulse
     ~user_documentation:"See [MEMORY_LEAK_C](#memory_leak_c)"

@@ -68,6 +68,13 @@ val prune_binop :
   -> AbductiveDomain.t
   -> AbductiveDomain.t AccessResult.t SatUnsat.t
 
+val prune_binop_insecsl :
+     Binop.t
+  -> operand
+  -> operand
+  -> AbductiveDomain.t
+  -> AbductiveDomain.t AccessResult.t SatUnsat.t
+
 val prune_eq_zero :
   AbstractValue.t -> AbductiveDomain.t -> AbductiveDomain.t AccessResult.t SatUnsat.t
 (** helper function wrapping [prune_binop] *)

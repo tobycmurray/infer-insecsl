@@ -142,6 +142,7 @@ let unknown_call ({PathContext.timestamp} as path) call_loc (reason : CallEvent.
 
 let apply_callee tenv ({PathContext.timestamp} as path) ~caller_proc_desc callee_pname call_loc
     callee_exec_state ~ret ~captured_formals ~captured_actuals ~formals ~actuals astate =
+  let astate_orig = astate in
   let open ExecutionDomain in
   let ( let* ) x f =
     SatUnsat.bind
@@ -150,9 +151,9 @@ let apply_callee tenv ({PathContext.timestamp} as path) ~caller_proc_desc callee
         |> SatUnsat.of_option |> SatUnsat.map PulseResult.join )
       x
   in
-  let map_call_result ~is_isl_error_prepost callee_prepost ~f =
+  let map_call_result ~is_isl_error_prepost ~insecsl_sats ~insecsl_trace callee_prepost ~f =
     let sat_unsat, contradiction =
-      PulseInterproc.apply_prepost path ~is_isl_error_prepost callee_pname call_loc ~callee_prepost
+      PulseInterproc.apply_prepost path ~is_isl_error_prepost ~insecsl_sats ~insecsl_trace callee_pname call_loc ~callee_prepost
         ~captured_formals ~captured_actuals ~formals ~actuals astate
     in
     let sat_unsat =
@@ -177,16 +178,16 @@ let apply_callee tenv ({PathContext.timestamp} as path) ~caller_proc_desc callee
   in
   match callee_exec_state with
   | ContinueProgram astate ->
-      map_call_result ~is_isl_error_prepost:false astate ~f:(fun _subst astate ->
+      map_call_result ~is_isl_error_prepost:false ~insecsl_sats:[] ~insecsl_trace:None astate ~f:(fun _subst astate ->
           Sat (Ok (ContinueProgram astate)) )
   | ExceptionRaised astate ->
-      map_call_result ~is_isl_error_prepost:false astate ~f:(fun _subst astate ->
+      map_call_result ~is_isl_error_prepost:false ~insecsl_sats:[] ~insecsl_trace:None astate ~f:(fun _subst astate ->
           Sat (Ok (ExceptionRaised astate)) )
   | AbortProgram astate
   | ExitProgram astate
   | LatentAbortProgram {astate}
   | LatentInvalidAccess {astate} ->
-      map_call_result ~is_isl_error_prepost:false
+      map_call_result ~is_isl_error_prepost:false ~insecsl_sats:[] ~insecsl_trace:None
         (astate :> AbductiveDomain.t)
         ~f:(fun subst astate_post_call ->
           let* (astate_summary : AbductiveDomain.summary) =
@@ -199,7 +200,7 @@ let apply_callee tenv ({PathContext.timestamp} as path) ~caller_proc_desc callee
             >>| AccessResult.of_summary
           in
           match callee_exec_state with
-          | ContinueProgram _ | ExceptionRaised _ | ISLLatentMemoryError _ ->
+          | ContinueProgram _ | ExceptionRaised _ | ISLLatentMemoryError _ | InsecSLLeakageError _ ->
               assert false
           | AbortProgram _ ->
               (* bypass the current errors to avoid compounding issues *)
@@ -213,6 +214,62 @@ let apply_callee tenv ({PathContext.timestamp} as path) ~caller_proc_desc callee
                   latent_issue
               in
               let diagnostic = LatentIssue.to_diagnostic latent_issue in
+              (* apply the callee summary to the must_be_sats *)
+              (* TODO: at present we keep the state obtained after applying the callee summary, but before summarising the obtained postcondition.
+                      We do this so we can print it out for debugging purposes. Discard in future. *)
+              (* FIXME: this duplicates much of map_call_result, and also reappears again in the InsecSLLeakageError case below. Factor out that duplication. *)
+              let ksats = 
+                (match diagnostic with
+                | InformationLeak {must_be_sat} -> 
+                  let open SatUnsat.Import in 
+                  List.map must_be_sat ~f:(fun (astate:AbductiveDomain.summary) ->
+                  let callee_prepost = (astate :> AbductiveDomain.t) in
+                  PulseInterproc.apply_prepost path ~is_isl_error_prepost:false ~insecsl_sats:[] ~insecsl_trace:None callee_pname call_loc ~callee_prepost
+                    ~captured_formals ~captured_actuals ~formals ~actuals astate_orig
+                  |>
+                  fun (sat_unsat,contradiction) -> 
+                    match sat_unsat with | Unsat -> Unsat | Sat a ->
+                      match contradiction with 
+                      | Some _ -> Unsat
+                      | None -> 
+                        match a with 
+                        | Ok (astate_post,return_val_opt,_subst) ->
+                          (let astate_post =
+                            match return_val_opt with
+                            | Some return_val_hist ->
+                                PulseOperations.write_id (fst ret) return_val_hist astate_post
+                            | None ->
+                                PulseOperations.havoc_id (fst ret)
+                                  (ValueHistory.singleton
+                                     (Call
+                                        { f= Call callee_pname
+                                        ; location= call_loc
+                                        ; in_call= ValueHistory.epoch
+                                        ; timestamp } ) )
+                                  astate_post
+                          in
+                          let x =
+                          (AbductiveDomain.summary_of_post tenv
+                          (Procdesc.get_proc_name caller_proc_desc)
+                          (Procdesc.get_attributes caller_proc_desc)
+                          call_loc astate_post)
+                          in
+                          match x with Unsat -> Unsat | Sat a ->
+                          Sat (astate_post,a))
+                        | _ -> assert false) 
+                | _ -> []) in
+              let* ksats = SatUnsat.reduce ksats in
+              (*
+              Logging.debug_dev "apply_callee Latent %a must_be_sats are SAT\n" Procname.pp callee_pname;
+              let _ = List.map ksats ~f:(fun (sat_before_summary,_sat) -> 
+                Logging.debug_dev "apply_callee Latent %a here is a SAT must_be_sat before we summarised: @[%a@]\n" Procname.pp callee_pname AbductiveDomain.pp sat_before_summary) in
+              *)
+              let sats = List.map ~f:snd ksats in
+              let sats = List.map sats ~f:(fun x -> match x with Result.Ok a -> a | _ -> assert false) in
+              let diagnostic = 
+                match diagnostic with | InformationLeak {calling_context;trace} ->
+                  Diagnostic.InformationLeak {calling_context;trace;must_be_sat=sats}
+                | _ -> diagnostic in 
               match LatentIssue.should_report astate_summary diagnostic with
               | `DelayReport latent_issue ->
                   L.d_printfln ~color:Orange "issue is still latent, recording a LatentAbortProgram" ;
@@ -290,7 +347,7 @@ let apply_callee tenv ({PathContext.timestamp} as path) ~caller_proc_desc callee
                                 ; astate= astate_summary } )
                          , [] ) ) ) ) )
   | ISLLatentMemoryError astate ->
-      map_call_result ~is_isl_error_prepost:true
+      map_call_result ~is_isl_error_prepost:true ~insecsl_sats:[] ~insecsl_trace:None
         (astate :> AbductiveDomain.t)
         ~f:(fun _subst astate ->
           let open SatUnsat.Import in
@@ -301,6 +358,67 @@ let apply_callee tenv ({PathContext.timestamp} as path) ~caller_proc_desc callee
           >>| AccessResult.ignore_leaks >>| AccessResult.of_abductive_summary_result
           >>| AccessResult.of_summary
           >>| PulseResult.map ~f:(fun astate_summary -> ISLLatentMemoryError astate_summary) )
+  | InsecSLLeakageError {astate; must_be_sat; trace} ->
+    let open SatUnsat.Import in
+        (* TODO: at present we keep the state obtained after applying the callee summary, but before summarising the obtained postcondition.
+                We do this so we can print it out for debugging purposes. Discard in future. *)
+        (* FIXME: this duplicates much of map_call_result, and also reappears again in the Latent case above. Factor out that duplication. *)
+        let ksats = 
+          (List.map must_be_sat ~f:(fun (astate:AbductiveDomain.summary) ->
+            let callee_prepost = (astate :> AbductiveDomain.t) in
+            PulseInterproc.apply_prepost path ~is_isl_error_prepost:false ~insecsl_sats:[] ~insecsl_trace:None callee_pname call_loc ~callee_prepost
+              ~captured_formals ~captured_actuals ~formals ~actuals astate_orig
+            |>
+            (fun (sat_unsat,contradiction) -> 
+              match sat_unsat with | Unsat -> Unsat | Sat a ->
+                match contradiction with 
+                | Some _ -> Unsat
+                | None -> (
+                  match a with 
+                  | Ok (astate_post,return_val_opt,_subst) ->
+                    let astate_post =
+                      match return_val_opt with
+                      | Some return_val_hist ->
+                          PulseOperations.write_id (fst ret) return_val_hist astate_post
+                      | None ->
+                          PulseOperations.havoc_id (fst ret)
+                            (ValueHistory.singleton
+                               (Call
+                                  { f= Call callee_pname
+                                  ; location= call_loc
+                                  ; in_call= ValueHistory.epoch
+                                  ; timestamp } ) )
+                            astate_post
+                    in
+                    let x =
+                    AbductiveDomain.summary_of_post tenv
+                    (Procdesc.get_proc_name caller_proc_desc)
+                    (Procdesc.get_attributes caller_proc_desc)
+                    call_loc astate_post
+                    in
+                    (match x with | Unsat -> Unsat | Sat a -> Sat (astate_post,a))
+                  | _ -> assert false))))
+        in
+        (*
+        let bsats = SatUnsat.reduce ksats in
+        let _ = (match bsats with | Unsat -> [()] | Sat bs -> 
+          Logging.debug_dev "apply_callee InsecSLLeakageError %a: must_be_sats are SAT\n" Procname.pp callee_pname;
+           List.map bs ~f:(fun (sat_before_summary,_) ->
+            Logging.debug_dev "apply_callee InsecSLLeakageError %a: here is a SAT must_be_sat before summarising: @[%a@]\n" Procname.pp callee_pname AbductiveDomain.pp sat_before_summary)) in
+        *)
+        let sats = List.map ksats ~f:(fun sat_unsat -> match sat_unsat with | Unsat -> Unsat | Sat (_,b) -> Sat b) in    
+        map_call_result ~is_isl_error_prepost:true ~insecsl_sats:sats ~insecsl_trace:(Some trace)
+        (astate :> AbductiveDomain.t)
+        ~f:(fun _subst astate ->
+          let open SatUnsat.Import in
+          AbductiveDomain.summary_of_post tenv
+            (Procdesc.get_proc_name caller_proc_desc)
+            (Procdesc.get_attributes caller_proc_desc)
+            call_loc astate
+          >>| AccessResult.ignore_leaks >>| AccessResult.of_abductive_summary_result
+          >>| AccessResult.of_summary
+          >>| PulseResult.map 
+                ~f:(fun astate -> (InsecSLLeakageError {astate; must_be_sat; trace})) )
 
 
 let conservatively_initialize_args arg_values ({AbductiveDomain.post} as astate) =

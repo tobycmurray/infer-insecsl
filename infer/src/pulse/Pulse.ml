@@ -71,6 +71,7 @@ module PulseTransferFunctions = struct
             | AbortProgram astate
             | LatentAbortProgram {astate}
             | LatentInvalidAccess {astate}
+            | InsecSLLeakageError {astate; _}
             | ISLLatentMemoryError astate ) ->
             (astate :> AbductiveDomain.t).need_specialization
         | None ->
@@ -103,6 +104,11 @@ module PulseTransferFunctions = struct
                   AbductiveDomain.summary_with_need_specialization latent_invalid_access.astate
                 in
                 LatentInvalidAccess {latent_invalid_access with astate}
+            | InsecSLLeakageError {astate; must_be_sat; trace} ->
+                let astate = AbductiveDomain.summary_with_need_specialization astate in
+                (* TODO: no idea if we should be doing this to the must_be_sats too. Let's do it anyway ... *)
+                let must_be_sat = List.map ~f:AbductiveDomain.summary_with_need_specialization must_be_sat in
+                InsecSLLeakageError {astate; must_be_sat; trace}
             | ISLLatentMemoryError astate ->
                 let astate = AbductiveDomain.summary_with_need_specialization astate in
                 ISLLatentMemoryError astate ) )
@@ -265,6 +271,7 @@ module PulseTransferFunctions = struct
           call_loc gone_out_of_scope out_of_scope_base astate
         >>| ExecutionDomain.continue
     | ISLLatentMemoryError _
+    | InsecSLLeakageError _
     | AbortProgram _
     | ExitProgram _
     | LatentAbortProgram _
@@ -288,6 +295,7 @@ module PulseTransferFunctions = struct
       | ContinueProgram astate ->
           ContinueProgram (do_astate astate)
       | ISLLatentMemoryError _
+      | InsecSLLeakageError _
       | AbortProgram _
       | LatentAbortProgram _
       | ExitProgram _
@@ -387,6 +395,7 @@ module PulseTransferFunctions = struct
           | AbortProgram _
           | LatentAbortProgram _
           | LatentInvalidAccess _
+          | InsecSLLeakageError _
           | ISLLatentMemoryError _ ) as exec_state ->
             Ok exec_state
       in
@@ -490,6 +499,7 @@ module PulseTransferFunctions = struct
           List.concat_map astates ~f:(fun astate ->
               match astate with
               | ISLLatentMemoryError _
+              | InsecSLLeakageError _
               | AbortProgram _
               | ExceptionRaised _
               | ExitProgram _
@@ -547,6 +557,7 @@ module PulseTransferFunctions = struct
       List.concat_map astate_list ~f:(fun (astate : ExecutionDomain.t) ->
           match astate with
           | ISLLatentMemoryError _
+          | InsecSLLeakageError _
           | AbortProgram _
           | ExceptionRaised _
           | ExitProgram _
@@ -573,6 +584,7 @@ module PulseTransferFunctions = struct
     List.map astates ~f:(fun (exec_state : ExecutionDomain.t) ->
         match exec_state with
         | ISLLatentMemoryError _
+        | InsecSLLeakageError _
         | AbortProgram _
         | ExitProgram _
         | LatentAbortProgram _
@@ -651,7 +663,7 @@ module PulseTransferFunctions = struct
       ({InterproceduralAnalysis.tenv; proc_desc; err_log} as analysis_data) _cfg_node
       (instr : Sil.instr) : ExecutionDomain.t list * PathContext.t * NonDisjDomain.t =
     match astate with
-    | AbortProgram _ | ISLLatentMemoryError _ | LatentAbortProgram _ | LatentInvalidAccess _ ->
+    | AbortProgram _ | ISLLatentMemoryError _ | InsecSLLeakageError _ | LatentAbortProgram _ | LatentInvalidAccess _ ->
         ([astate], path, astate_n)
     (* an exception has been raised, we skip the other instructions until we enter in
        exception edge *)
@@ -779,12 +791,12 @@ module PulseTransferFunctions = struct
           in
           (astates, path, astate_n)
       | Prune (condition, loc, is_then_branch, if_kind) ->
-          let prune_result = PulseOperations.prune path loc ~condition astate in
+          let prune_result = PulseOperations.prune_insecsl path loc ~condition astate in
           let path =
             match PulseOperationResult.sat_ok prune_result with
             | None ->
                 path
-            | Some (_, hist) ->
+            | Some (Ok (_, hist) :: _) ->
                 if Sil.is_terminated_if_kind if_kind then
                   let hist =
                     ValueHistory.sequence
@@ -793,11 +805,11 @@ module PulseTransferFunctions = struct
                   in
                   {path with conditions= hist :: path.conditions}
                 else path
+            | Some _ -> path
           in
-          let results =
-            let<++> astate, _ = prune_result in
-            astate
-          in
+          let results = (let++ presults = prune_result in (List.map presults ~f:(fun res -> let+ (astate,_) = res in astate))) in
+          let results = (match results with | Sat (Ok res) -> res | _ -> []) in
+          let results = List.concat_map results ~f:(fun x -> let<++> a = Sat x in a) in
           (PulseReport.report_exec_results tenv proc_desc err_log loc results, path, astate_n)
       | Metadata EndBranches ->
           (* We assume that terminated conditions are well-parenthesised, hence an [EndBranches]
@@ -885,6 +897,7 @@ let exit_function analysis_data location posts non_disj_astate =
       ~f:(fun (acc_astates, astate_n) (exec_state, path) ->
         match exec_state with
         | ISLLatentMemoryError _
+        | InsecSLLeakageError _
         | AbortProgram _
         | ExitProgram _
         | ExceptionRaised _

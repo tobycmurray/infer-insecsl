@@ -90,6 +90,8 @@ let exec_summary_of_post_common tenv ~continue_program proc_desc err_log locatio
       Sat (LatentInvalidAccess {astate; address; must_be_valid; calling_context})
   | ISLLatentMemoryError astate ->
       Sat (ISLLatentMemoryError astate)
+  | InsecSLLeakageError astate ->
+      Sat (InsecSLLeakageError astate)
 
 
 let force_exit_program tenv proc_desc err_log post =
