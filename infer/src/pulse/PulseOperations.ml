@@ -280,6 +280,7 @@ let prune path location ~condition astate =
   in
   prune_aux ~negated:false condition astate
 
+  (* FIXME: factor out duplication with prune above *)
   let prune_insecsl path location ~condition astate =
     let rec prune_aux ~negated exp astate =
       match (exp : Exp.t) with
@@ -303,8 +304,12 @@ let prune path location ~condition astate =
             | _ ->
                 ValueHistory.binary_op bop lhs_hist rhs_hist
           in
-          (Ok (astate, hist)) :: (List.map errstates ~f:(fun errtate -> FatalError ((InsecSLError {astate = errtate; must_be_sat = astate :: astatex :: [];
-                                                                                                   location = location; address = hist}), [])))
+          let rest =
+            if Config.pulse_insecsl then
+              (List.map errstates ~f:(fun errtate -> FatalError ((InsecSLError {astate = errtate; must_be_sat = astate :: astatex :: [];
+                                                                                location = location; address = hist}), [])))
+            else [] in
+          (Ok (astate, hist)) :: rest
       | UnOp (LNot, exp', _) ->
           prune_aux ~negated:(not negated) exp' astate
       | exp ->

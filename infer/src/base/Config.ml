@@ -2109,6 +2109,10 @@ and pulse_isl =
     "[Pulse] Incorrectness Separation Logic (ISL) mode: explicit Ok/Error summaries are recorded. \
      For experiments only."
 
+and pulse_insecsl =
+  CLOpt.mk_bool ~long:"pulse-insecsl" ~default:false
+    "[Pulse] Insecurity Separation Logic (InsecSL) mode: extends ISL to detect information leakage. \
+     For experiments only."
 
 and pulse_manifest_emp =
   CLOpt.mk_bool ~long:"pulse-manifest-emp" ~default:false
@@ -3651,6 +3655,11 @@ and pulse_inline_global_init_func_pointer = !pulse_inline_global_init_func_point
 and pulse_intraprocedural_only = !pulse_intraprocedural_only
 
 and pulse_isl = !pulse_isl
+
+and pulse_insecsl =
+  if (not !pulse_isl) then
+    L.die UserError "pulse-insecsl requires pulse-isl also to be set"
+  else !pulse_insecsl
 
 and pulse_manifest_emp = !pulse_manifest_emp
 

@@ -530,6 +530,8 @@ val pulse_intraprocedural_only : bool
 
 val pulse_isl : bool
 
+val pulse_insecsl : bool
+
 val pulse_manifest_emp : bool
 
 val pulse_max_cfg_size : int

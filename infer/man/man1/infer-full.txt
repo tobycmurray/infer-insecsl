@@ -2301,6 +2301,11 @@ INTERNAL OPTIONS
            explicit Ok/Error summaries are recorded. For experiments only.
            (Conversely: --no-pulse-isl)
 
+       --pulse-insecsl
+           Activates: [Pulse] Insecurity Separation Logic (InsecSL) mode:
+           extends ISL to detect information leakage. For experiments only.
+           (Conversely: --no-pulse-insecsl)
+
        --pulse-manifest-emp
            Activates: [Pulse] manifest errors with postive heaps in pre. For
            experiments only. (Conversely: --no-pulse-manifest-emp)
