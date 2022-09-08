@@ -177,7 +177,15 @@ let summary_error_of_error tenv proc_desc location (error : AccessResult.error) 
       match SatUnsat.reduce must_be_sat_summs with
       | Unsat -> Unsat
       | Sat must_be_sat ->
-        let must_be_sat = List.map must_be_sat ~f:(fun res -> match res with | Result.Ok a -> a | _ -> assert false) in
+        let must_be_sat =
+          List.map must_be_sat
+            ~f:(fun res -> match res with | Result.Ok a -> a | Result.Error b ->
+                 match b with
+                 | `MemoryLeak (a,_,_,_) -> a
+                 | `PotentialInvalidAccessSummary (a,_,_) -> a
+                 | `ResourceLeak (a,_,_,_) -> a
+                 | `RetainCycle (a,_,_,_,_) -> a
+               ) in
         summary_of_error_post tenv proc_desc location (fun astate -> InsecSLErrorSummary {astate; must_be_sat; trace= Immediate {location= location; history= address}}) astate
   
   

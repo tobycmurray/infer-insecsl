@@ -375,6 +375,7 @@ let apply_callee tenv ({PathContext.timestamp} as path) ~caller_proc_desc callee
                 | Some _ -> Unsat
                 | None -> (
                   match a with 
+                  | Recoverable ((astate_post,return_val_opt,_subst), _)
                   | Ok (astate_post,return_val_opt,_subst) ->
                     let astate_post =
                       match return_val_opt with
@@ -397,7 +398,7 @@ let apply_callee tenv ({PathContext.timestamp} as path) ~caller_proc_desc callee
                     call_loc astate_post
                     in
                     (match x with | Unsat -> Unsat | Sat a -> Sat (astate_post,a))
-                  | _ -> assert false))))
+                  | FatalError _ -> Unsat (* TODO: could this lead to false negatives? *) ))))
         in
         (*
         let bsats = SatUnsat.reduce ksats in
