@@ -82,24 +82,31 @@ type label = string
 (** A jump to a block. *)
 type jump = private {mutable dst: block; mutable retreating: bool}
 
+and call_target =
+  { mutable func: func
+  ; mutable recursive: bool
+        (** Holds unless this call target is definitely not recursive *) }
+
+and icall_target =
+  { ptr: Exp.t  (** Dynamically resolved function pointer. *)
+  ; mutable candidates: call_target iarray
+        (** Statically computed over-approximation of possible call targets. *)
+  }
+
 and callee =
-  | Direct of func  (** Statically resolved function *)
-  | Indirect of {ptr: Exp.t; candidates: func iarray}
-      (** Dynamically resolved function-pointer, along with an array of
-          candidate callees overapproximating the possible call targets *)
+  | Direct of call_target  (** Statically resolved function *)
+  | Indirect of icall_target  (** Dynamically resolved function *)
   | Intrinsic of Intrinsic.t
       (** Intrinsic implemented in analyzer rather than source code *)
 
 (** A call to a function. *)
 and 'a call =
-  { mutable callee: 'a
+  { callee: 'a
   ; typ: Typ.t  (** Type of the callee. *)
   ; actuals: Exp.t iarray  (** Actual arguments. *)
   ; areturn: Reg.t option  (** Register to receive return value. *)
   ; return: jump  (** Return destination. *)
   ; throw: jump option  (** Handler destination. *)
-  ; mutable recursive: bool
-        (** Holds unless [callee] is definitely not recursive. *)
   ; loc: Loc.t }
 
 (** Block terminators for function call/return or other control transfers. *)
@@ -127,9 +134,9 @@ and block = private
   ; mutable parent: func
   ; mutable sort_index: int
         (** Position in a topological order, ignoring [retreating] edges. *)
-  ; mutable checkpoint_dists: int Int.Map.t
-        (** Distances from this block to some [Sparse_trace.t]'s
-            checkpoints, as computed by [Program.compute_distances]. *) }
+  ; mutable goal_distance: int
+        (** An upper bound on the distance from this block to the end of the
+            current goal trace, measured in blocks. *) }
 
 (** A function is a control-flow graph with distinguished entry block, whose
     parameters are the function parameters. *)
@@ -252,7 +259,9 @@ module Block : sig
   type t = block [@@deriving compare, equal, sexp_of]
 
   val pp : t pp
+  val pp_ident : t pp
   val mk : lbl:label -> cmnd:cmnd -> term:term -> block
+  val set_goal_distance : int -> t -> unit
 
   module Map : Map.S with type key := t
   module Tbl : HashTable.S with type key := t
@@ -317,18 +326,32 @@ module Program : sig
   include Invariant.S with type t := t
 
   val mk : globals:GlobalDefn.t list -> functions:func list -> t
+end
 
-  val compute_distances :
-       entry:block
-    -> src_trace:FuncName.t iarray
-    -> snk_trace:FuncName.t iarray
-    -> t
+(** Given a sparse goal trace to follow through a program, compute at each
+    basic block an upper bound on the distance to completion of that goal
+    trace, and decorate those basic blocks by their respective distances.
+
+    This distance computation is performed using a "tabulation" algorithm,
+    building summaries of each procedure that describe the lengths of paths
+    through that procedure as well as their effect on progress through the
+    goal trace.
+
+    Currently, we only provide a "top down" analysis, which begins from the
+    given entrypoint and recursively computes all summaries needed to fully
+    analyze the program.
+
+    A bottom-up approach is also possible, by analyzing the procedures
+    separately in reverse topological order. This has the advantage that
+    summaries are always computed before they need to be applied, but may
+    incur additional work by computing unneeded summaries. *)
+module Distance_tabulation : sig
+  val top_down :
+       program
+    -> entry:FuncName.t
+    -> [`Call of FuncName.t | `Retn of FuncName.t] iarray
     -> (unit, Format.formatter -> unit) result
-  (** Compute static distance heuristics along the trace defined by
-      [src_trace] and [snk_trace]. For each step, we compute the distance to
-      the next checkpoint for every block on a path from the previous to the
-      next checkpoint, storing the results in the [checkpoint_dists] field
-      of those blocks. Returns [Ok ()] if a path was found and written to
-      block metadata, and [Error dp_path] otherwise, with [dp_path] a
-      delayed printer describing the specific path that could not be found. *)
+  (** Returns [Ok ()] if a path was found and written to block metadata, and
+      [Error dp_path] otherwise, with [dp_path] a delayed printer describing
+      the specific trace segment that could not be followed. *)
 end

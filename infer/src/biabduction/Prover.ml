@@ -19,9 +19,13 @@ let decrease_indent_when_exception thunk =
     IExn.reraise_after exn ~f:(fun () -> L.d_decrease_indent ())
 
 
-let compute_max_from_nonempty_int_list l = uw (List.max_elt ~compare:IntLit.compare_value l)
+let compute_max_from_nonempty_int_list l =
+  Option.value_exn (List.max_elt ~compare:IntLit.compare_value l)
 
-let compute_min_from_nonempty_int_list l = uw (List.min_elt ~compare:IntLit.compare_value l)
+
+let compute_min_from_nonempty_int_list l =
+  Option.value_exn (List.min_elt ~compare:IntLit.compare_value l)
+
 
 let rec list_rev_acc acc = function [] -> acc | x :: l -> list_rev_acc (x :: acc) l
 
@@ -2246,6 +2250,8 @@ and sigma_imply tenv calc_index_frame calc_missing subs prop1 sigma2 : subst2 * 
           Predicates.Estruct (List.map ~f:mk_fld_sexp fields, Predicates.inst_none)
       | Erlang ->
           L.die InternalError "Erlang not supported"
+      | Hack ->
+          L.die InternalError "Hack not supported"
     in
     let const_string_texp =
       match !Language.curr_language with
@@ -2273,6 +2279,8 @@ and sigma_imply tenv calc_index_frame calc_missing subs prop1 sigma2 : subst2 * 
             ; subtype= Subtype.exact }
       | Erlang ->
           L.die InternalError "Erlang not supported"
+      | Hack ->
+          L.die InternalError "Hack not supported"
     in
     Predicates.Hpointsto (root, sexp, const_string_texp)
   in

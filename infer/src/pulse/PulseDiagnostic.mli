@@ -59,7 +59,7 @@ type read_uninitialized_value =
 type information_leak =
   { calling_context: calling_context
   ; trace: Trace.t
-  ; must_be_sat: PulseAbductiveDomain.summary list }
+  ; must_be_sat: PulseAbductiveDomain.Summary.t list }
 [@@deriving compare, equal, yojson_of]
 
 type flow_kind = TaintedFlow | FlowToSink | FlowFromSource [@@deriving equal]
@@ -88,7 +88,10 @@ type t =
   | UnnecessaryCopy of
       { copied_into: PulseAttribute.CopiedInto.t
       ; typ: Typ.t
-      ; location: Location.t
+      ; location: Location.t (* the location to report the issue *)
+      ; copied_location: Location.t option
+            (* [copied_location] has a value when the copied location is different to where to
+               report: e.g. this is the case for returning copied values. *)
       ; from: PulseAttribute.CopyOrigin.t }
 [@@deriving equal]
 

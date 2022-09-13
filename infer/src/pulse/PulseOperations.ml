@@ -241,7 +241,9 @@ let eval path mode location exp0 astate =
             (AbstractValueOperand addr_rhs) astate
         in
         (astate, (binop_addr, ValueHistory.binary_op bop hist_lhs hist_rhs))
-    | Sizeof _ | Exn _ ->
+    | Exn exp ->
+        eval path Read exp astate
+    | Sizeof _ ->
         Sat (Ok (astate, (AbstractValue.mk_fresh (), (* TODO history *) ValueHistory.epoch)))
   in
   eval path mode exp0 astate
@@ -580,7 +582,7 @@ let check_address_escape escape_location proc_desc address history astate =
   in
   let check_address_of_cpp_temporary () =
     AddressAttributes.find_opt address astate
-    |> Option.fold_result ~init:() ~f:(fun () attrs ->
+    |> Option.value_map ~default:(Result.Ok ()) ~f:(fun attrs ->
            IContainer.iter_result ~fold:Attributes.fold attrs ~f:(fun attr ->
                match attr with
                | Attribute.AddressOfCppTemporary (variable, _)

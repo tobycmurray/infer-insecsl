@@ -29,14 +29,14 @@ type contradiction = private
   | ISLPreconditionMismatch
   | PathCondition
 
-val apply_prepost :
+val apply_summary :
      PathContext.t
   -> is_isl_error_prepost:bool
-  -> insecsl_sats:(AbductiveDomain.summary,'a) result sat_unsat_t list 
+  -> insecsl_sats:(AbductiveDomain.Summary.t,'a) result sat_unsat_t list 
   -> insecsl_trace:(Trace.t option)
   -> Procname.t
   -> Location.t
-  -> callee_prepost:AbductiveDomain.t
+  -> callee_summary:AbductiveDomain.Summary.t
   -> captured_formals:(Var.t * Typ.t) list
   -> captured_actuals:((AbstractValue.t * ValueHistory.t) * Typ.t) list
   -> formals:(Var.t * Typ.t) list

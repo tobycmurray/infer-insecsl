@@ -247,7 +247,7 @@ struct
     type t
 
     val empty : t
-    val push_call : Llair.func Llair.call -> D.from_call -> t -> t
+    val push_call : Llair.call_target Llair.call -> D.from_call -> t -> t
     val pop_return : t -> (D.from_call * Llair.jump * t) option
 
     val pop_throw :
@@ -291,7 +291,7 @@ struct
     let empty = Empty |> check invariant
 
     let push_return call from_call stk =
-      let Llair.{callee= {formals; locals}; return; _} = call in
+      let Llair.{callee= {func= {formals; locals}; _}; return; _} = call in
       Return {dst= return; formals; locals; from_call; stk}
       |> check invariant
 
@@ -504,7 +504,8 @@ struct
       transition need not originate from the terminator of [src]. Edges can
       also represent transitions that produce threads in non-[Runnable]
       scheduling states, determined by the form of [dst]. *)
-  type edge = {dst: Thread.t; src: Llair.Block.t} [@@deriving sexp_of]
+  type edge = {dst: Thread.t; src: Llair.Block.t; retreating: bool}
+  [@@deriving sexp_of]
 
   module Edge = struct
     type t = edge [@@deriving sexp_of]
@@ -525,12 +526,8 @@ struct
         match (x, y) with
         | {dst= Runnable x_t}, {dst= Runnable y_t}
          |{dst= Suspended x_t}, {dst= Suspended y_t} ->
-            let is_rec_call = function
-              | {Llair.term= Call {recursive= true}} -> true
-              | _ -> false
-            in
             let compare_stk stk1 stk2 =
-              if is_rec_call x.src then 0
+              if x.retreating then 0
               else Stack.compare_as_inlined_location stk1 stk2
             in
             Llair.IP.compare x_t.ip y_t.ip
@@ -567,38 +564,6 @@ struct
         | `Both (d1, d2) -> Some (Int.max d1 d2) )
   end
 
-  module Hist = struct
-    (** a history is a current instruction pointer and some list of
-        predecessors. [preds] are empty iff this is an entrypoint. *)
-    type t = {curr: Llair.IP.t; preds: t iarray} [@@deriving sexp_of]
-
-    let init ip = {curr= ip; preds= IArray.empty}
-    let extend curr preds = {curr; preds= IArray.of_list preds}
-
-    let dump h fs =
-      (* todo: output nicely-formatted DAG; just printing a single
-         arbitrarily-chosen witness path from the root for now. *)
-      let path =
-        let rec path_impl h =
-          let tail =
-            if IArray.is_empty h.preds then []
-            else path_impl (IArray.get h.preds 0)
-          in
-          if Llair.IP.index h.curr = 0 || IArray.length h.preds > 1 then
-            h.curr :: tail
-          else tail
-        in
-        path_impl >> List.rev
-      in
-      let pp_ip fs ip =
-        let open Llair in
-        Format.fprintf fs "%a%a%a" FuncName.pp (IP.block ip).parent.name
-          IP.pp ip Loc.pp (IP.loc ip)
-      in
-      Format.fprintf fs "@[<v 2>Witness Trace:@ %a@]" (List.pp "@ " pp_ip)
-        (path h)
-  end
-
   type switches = int [@@deriving compare, equal, sexp_of]
 
   (** Abstract memory, control, and history state, with a slot used for the
@@ -614,7 +579,7 @@ struct
     ; switches: switches  (** count of preceding context switches *)
     ; depths: Depths.t  (** count of retreating edge crossings *)
     ; goal: Goal.t  (** goal for symbolic execution exploration *)
-    ; history: Hist.t  (** DAG history of executions to this point *) }
+    ; history: History.t  (** DAG history of executions to this point *) }
   [@@deriving sexp_of]
 
   (** An abstract machine state consists of the instruction pointer of the
@@ -647,7 +612,7 @@ struct
     type t
 
     val init : D.t -> Llair.block -> Goal.t -> t
-    val add : retreating:bool -> work -> t -> t
+    val add : work -> t -> t
     val run : f:(ams -> t -> t) -> t -> unit
   end = struct
     (** Element of the frontier of execution, ordered for scheduler's
@@ -719,7 +684,7 @@ struct
         across several executions that share the same execution history. *)
     module Joinable = struct
       module Elt = struct
-        type t = {state: D.t; depths: Depths.t; history: Hist.t [@ignore]}
+        type t = {state: D.t; depths: Depths.t; history: History.t [@ignore]}
         [@@deriving compare, equal, sexp_of]
       end
 
@@ -796,19 +761,21 @@ struct
       let stk = Stack.empty in
       let prev = curr in
       let tid = ThreadID.init in
-      let edge = {dst= Runnable {ip; stk; tid}; src= prev} in
+      let edge =
+        {dst= Runnable {ip; stk; tid}; src= prev; retreating= false}
+      in
       let threads = Threads.init in
       let switches = 0 in
       let depths = Depths.empty in
       let queue = Queue.create () in
       let cursor = Cursor.empty in
-      let history = Hist.init ip in
+      let history = History.init ip in
       enqueue depth
         {ctrl= edge; state; threads; switches; depths; goal; history}
         (queue, cursor)
 
-    let add ~retreating ({ctrl= edge; depths} as elt) wl =
-      if not retreating then enqueue 0 elt wl
+    let add ({ctrl= edge; depths} as elt) wl =
+      if not edge.retreating then enqueue 0 elt wl
       else
         let depth = 1 + Option.value (Depths.find edge depths) ~default:0 in
         if depth <= Config.loop_bound then
@@ -895,7 +862,7 @@ struct
           dequeue (queue, cursor)
       | Some ((switches, ip, threads, goal), next_states, cursor) ->
           let state, depths, histories, edges = Joinable.join next_states in
-          let history = Hist.extend ip.ip histories in
+          let history = History.extend ip.ip histories in
           [%Dbg.info
             " %i,%i: %a <-t%i- {@[%a@]}%a" switches top.ctrl.depth IP.pp ip
               ip.tid
@@ -926,8 +893,8 @@ struct
     let src = Llair.IP.block ip in
     let {Llair.dst; retreating} = jump in
     let ip = Llair.IP.mk dst in
-    let edge = {dst= Runnable {ip; stk; tid}; src} in
-    Work.add ~retreating {ams with ctrl= edge} wl
+    let edge = {dst= Runnable {ip; stk; tid}; src; retreating} in
+    Work.add {ams with ctrl= edge} wl
 
   let exec_skip_func areturn return ({ctrl= {ip; tid}; state} as ams) wl =
     Report.unknown_call (Llair.IP.block ip).term ;
@@ -936,19 +903,20 @@ struct
 
   let exec_call globals call ({ctrl= {stk; tid}; state; history} as ams) wl
       =
-    let Llair.{callee; actuals; areturn; return; recursive} = call in
-    let Llair.{name; formals; freturn; locals; entry} = callee in
+    let Llair.{callee; actuals; areturn; return} = call in
+    let Llair.{func; recursive} = callee in
+    let Llair.{name; formals; freturn; locals; entry} = func in
     [%Dbg.call fun {pf} ->
       pf " t%i@[<2>@ %a from %a with state@]@;<1 2>%a" tid
-        Llair.Func.pp_call call Llair.FuncName.pp return.dst.parent.name
-        D.pp state]
+        Llair.Func.pp_call {call with callee= func} Llair.FuncName.pp
+        return.dst.parent.name D.pp state]
     ;
     let ip = Llair.IP.mk entry in
     let goal = Goal.update_after_call name ams.goal in
     if goal != ams.goal && Goal.reached goal then
       Report.reached_goal
         ~dp_goal:(fun fs -> Goal.pp fs goal)
-        ~dp_witness:(Hist.dump (Hist.extend ip [history])) ;
+        ~dp_witness:(History.dump (History.extend ip [history])) ;
     let dnf_states =
       if Config.function_summaries then D.dnf state
       else Iter.singleton state
@@ -970,20 +938,22 @@ struct
             in
             let stk = Stack.push_call call from_call stk in
             let src = Llair.IP.block ams.ctrl.ip in
-            let edge = {dst= Runnable {ip; stk; tid}; src} in
-            Work.add ~retreating:recursive
-              {ams with ctrl= edge; state; goal}
-              wl
+            let edge =
+              {dst= Runnable {ip; stk; tid}; src; retreating= recursive}
+            in
+            Work.add {ams with ctrl= edge; state; goal} wl
         | Some post -> exec_jump return {ams with state= post; goal} wl )
     |>
     [%Dbg.retn fun {pf} _ -> pf ""]
 
   let exec_call call ams wl =
-    let Llair.{callee= {name} as callee; areturn; return; _} = call in
-    if Llair.Func.is_undefined callee then
+    let Llair.{callee= {func}; areturn; return; _} = call in
+    if Llair.Func.is_undefined func then
       exec_skip_func areturn return ams wl
     else
-      let globals = Domain_used_globals.by_function Config.globals name in
+      let globals =
+        Domain_used_globals.by_function Config.globals func.name
+      in
       exec_call globals call ams wl
 
   let exec_return exp ({ctrl= {ip; stk; tid}; state; history} as ams) wl =
@@ -996,7 +966,7 @@ struct
     if goal != ams.goal && Goal.reached goal then
       Report.reached_goal
         ~dp_goal:(fun fs -> Goal.pp fs goal)
-        ~dp_witness:(Hist.dump (Hist.extend ip [history])) ;
+        ~dp_witness:(History.dump (History.extend ip [history])) ;
     let summarize post_state =
       if not Config.function_summaries then post_state
       else
@@ -1028,8 +998,10 @@ struct
     | None ->
         summarize exit_state |> ignore ;
         let tc = D.term tid formals freturn exit_state in
-        Work.add ~retreating:false
-          {ams with ctrl= {dst= Terminated (tc, tid); src= block}; goal}
+        Work.add
+          { ams with
+            ctrl= {dst= Terminated (tc, tid); src= block; retreating= false}
+          ; goal }
           wl )
     |>
     [%Dbg.retn fun {pf} _ -> pf ""]
@@ -1140,13 +1112,19 @@ struct
       match resolve_callee pgm tid callee state with
       | [] -> exec_skip_func areturn return ams wl
       | callees ->
-          List.fold callees wl ~f:(fun callee wl ->
-              assert (
-                IArray.mem callee candidates ~eq:Llair.Func.equal
-                ||
-                ( warn "unexpected call target %a at indirect callsite %a"
-                    Llair.Func.pp callee Llair.Term.pp term () ;
-                  true ) ) ;
+          List.fold callees wl ~f:(fun callee_func wl ->
+              let callee =
+                match
+                  IArray.find candidates ~f:(fun {Llair.func; _} ->
+                      Llair.Func.equal func callee_func )
+                with
+                | Some callee -> callee
+                | None ->
+                    warn "unexpected call target %a at indirect callsite %a"
+                      Llair.Func.pp callee_func Llair.Term.pp term () ;
+                    (* Conservatively assume this call may be recursive *)
+                    {Llair.func= callee_func; recursive= true}
+              in
               exec_call {call with callee} ams wl ) )
     | Call {callee= Intrinsic callee; actuals; areturn; return} -> (
       match (callee, IArray.to_array actuals) with
@@ -1170,7 +1148,7 @@ struct
         if not (D.is_unsat state) then
           Report.alarm
             (Alarm.v Abort loc Llair.Term.pp term D.pp state)
-            ~dp_witness:(Hist.dump ams.history) ;
+            ~dp_witness:(History.dump ams.history) ;
         wl
     | Unreachable -> wl
 
@@ -1186,11 +1164,13 @@ struct
             let ip = Llair.IP.succ ip in
             if Llair.IP.is_schedule_point ip then
               let src = Llair.IP.block ip in
-              let edge = {dst= Runnable {ip; stk; tid}; src} in
-              Work.add ~retreating:false {ams with ctrl= edge; state} wl
+              let edge =
+                {dst= Runnable {ip; stk; tid}; src; retreating= false}
+              in
+              Work.add {ams with ctrl= edge; state} wl
             else exec_ip pgm {ams with ctrl= {ams.ctrl with ip}; state} wl
         | Error alarm ->
-            Report.alarm alarm ~dp_witness:(Hist.dump ams.history) ;
+            Report.alarm alarm ~dp_witness:(History.dump ams.history) ;
             wl )
     | None ->
         [%Dbg.info
@@ -1211,7 +1191,7 @@ struct
       D.call ThreadID.init ~summaries ~globals ~actuals ~areturn ~formals
         ~freturn ~locals (D.init pgm.globals)
     in
-    Goal.initialize ~pgm ~entry goal ;
+    Goal.initialize ~pgm ~entry:name goal ;
     Work.init state entry goal
 
   let exec_pgm pgm goal =

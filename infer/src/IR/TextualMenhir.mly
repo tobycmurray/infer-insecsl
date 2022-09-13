@@ -18,6 +18,7 @@
 
 %token AMPERSAND
 %token ASSIGN
+%token ATTRIBUTE
 %token COLON
 %token COMMA
 %token DECLARE
@@ -58,7 +59,9 @@
 %token <string> STRING
 
 %start <SourceFile.t -> Textual.Module.t> main
+%type <Attr.t> attribute
 %type <Module.decl> declaration
+%type <Procname.qualified_name> qualified_pname
 %type <ProcBaseName.t> pname
 %type <FieldBaseName.t> fname
 %type <NodeName.t> nname
@@ -79,6 +82,7 @@
 %type <Module.decl list> list(declaration)
 %type <Instr.t list> list(instruction)
 %type <Exp.t list> loption(separated_nonempty_list(COMMA,expression))
+%type <NodeName.t list> loption(separated_nonempty_list(COMMA,nname))
 %type <Terminator.node_call list> loption(separated_nonempty_list(COMMA,node_call))
 %type <Typ.t list> loption(separated_nonempty_list(COMMA,typ))
 %type <(Typ.t * VarName.t) list> loption(separated_nonempty_list(COMMA,typed_var))
@@ -86,6 +90,7 @@
 %type <Node.t list> nonempty_list(block)
 %type <int list> separated_nonempty_list(COMMA,LOCAL)
 %type <Exp.t list> separated_nonempty_list(COMMA,expression)
+%type <NodeName.t list> separated_nonempty_list(COMMA,nname)
 %type <Terminator.node_call list> separated_nonempty_list(COMMA,node_call)
 %type <Typ.t list> separated_nonempty_list(COMMA,typ)
 %type <(Typ.t * VarName.t) list> separated_nonempty_list(COMMA,typed_var)
@@ -94,8 +99,8 @@
 %%
 
 main:
-  | l=declaration* EOF
-    { (fun sourcefile -> { decls=l; sourcefile}) }
+  | attrs=attribute* decls=declaration* EOF
+    { (fun sourcefile -> { attrs; decls; sourcefile }) }
 
 pname:
   | id=IDENT
@@ -117,6 +122,16 @@ vname:
   | id=IDENT
     { { value=id; loc=location_of_pos $startpos(id) } }
 
+qualified_pname:
+  | tname=tname DOT name=pname
+    { {enclosing_class=Enclosing tname; name} }
+  | name=pname
+    { {enclosing_class=TopLevel; name} }
+
+attribute:
+  | ATTRIBUTE name=IDENT EQ value=STRING
+    { {name; value; loc=location_of_pos $startpos} }
+
 declaration:
   | GLOBAL name=vname
     { let pvar : Pvar.t = {name; kind=Global} in
@@ -125,22 +140,25 @@ declaration:
     { let fields =
         List.map l ~f:(fun (typ, name_f) ->
                         {Fieldname.name=name_f; typ; enclosing_type=name}) in
-      Struct {name; fields} }
-  | DECLARE name=pname LPAREN targs = separated_list(COMMA, typ) RPAREN COLON tres=typ
-    { let pkind : Procname.proc_kind = NonVirtual in
-      let kind : Procname.kind = Proc { pkind } in
-      let pname : Procname.t = {name; targs; tres; kind} (* FIXME: deals with virutal kind *) in
+      Struct {name; fields; methods=[]} }
+  | DECLARE qualified_name=qualified_pname LPAREN
+            formals_types = separated_list(COMMA, typ) RPAREN COLON result_type=typ
+    { let kind : Procname.kind = NonVirtual in
+      let pname : Procname.t = {qualified_name; formals_types; result_type; kind}
+      (* FIXME: deals with virutal kind *) in
       Procname pname
     }
-  | DEFINE name=pname LPAREN params = separated_list(COMMA, typed_var) RPAREN COLON tres=typ
+  | DEFINE qualified_name=qualified_pname LPAREN
+           params = separated_list(COMMA, typed_var) RPAREN COLON result_type=typ
                          LBRACKET nodes=block+ RBRACKET
-    { let targs = List.map ~f:fst params in
-      let pkind : Procname.proc_kind = NonVirtual in
-      let kind : Procname.kind = Proc { pkind } in
-      let procname : Procname.t = {name; targs; tres; kind} (* FIXME:: deals with virutal kind *) in
+    { let formals_types = List.map ~f:fst params in
+      let kind : Procname.kind = NonVirtual in
+      let procname : Procname.t = {qualified_name; formals_types; result_type; kind}
+      (* FIXME:: deals with virtual kind *) in
       let start_node = List.hd_exn nodes in
       let params = List.map ~f:snd params in
-      Proc { procname; nodes; start= start_node.Node.label; params}
+      let exit_loc = location_of_pos $endpos in
+      Proc { procname; nodes; start= start_node.Node.label; params; exit_loc}
     }
 
 base_typ:
@@ -224,8 +242,8 @@ terminator:
 node_call:
   | label=nname
     { {label; ssa_args=[]} }
-  | label=nname LPAREN l=separated_nonempty_list(COMMA, LOCAL) RPAREN
-    { {label; ssa_args=List.map ~f:Ident.of_int l} }
+  | label=nname LPAREN ssa_args=separated_nonempty_list(COMMA, expression) RPAREN
+    { {label; ssa_args} }
 
 opt_handlers:
   | { [] }
@@ -243,7 +261,7 @@ expression:
     { Index (e1, e2) }
   | c=const
     { Const c }
-  | proc=pname LPAREN args=separated_list(COMMA, expression) RPAREN
+  | proc=qualified_pname LPAREN args=separated_list(COMMA, expression) RPAREN
     { Call {proc; args} }
   | LPAREN e=expression COLON t=typ RPAREN
     { Cast (t, e) }

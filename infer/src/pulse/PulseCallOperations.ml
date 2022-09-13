@@ -19,6 +19,18 @@ let is_ptr_to_const formal_typ_opt =
       match formal_typ.desc with Typ.Tptr (t, _) -> Typ.is_const t.quals | _ -> false )
 
 
+let add_returned_from_unknown callee_pname_opt ret_val actuals astate =
+  if
+    (not (List.is_empty actuals))
+    && Option.value_map callee_pname_opt ~default:true ~f:(fun pname ->
+           not (Procname.is_constructor pname) )
+  then
+    AbductiveDomain.AddressAttributes.add_one ret_val
+      (ReturnedFromUnknown (List.map actuals ~f:(fun ((v, _), _) -> v)))
+      astate
+  else astate
+
+
 let unknown_call ({PathContext.timestamp} as path) call_loc (reason : CallEvent.t) callee_pname_opt
     ~ret ~actuals ~formals_opt ({AbductiveDomain.post} as astate) =
   let hist =
@@ -26,6 +38,8 @@ let unknown_call ({PathContext.timestamp} as path) call_loc (reason : CallEvent.
       (Call {f= reason; location= call_loc; in_call= ValueHistory.epoch; timestamp})
   in
   let ret_val = AbstractValue.mk_fresh () in
+  (* record the [ReturnedFromUnknown] attribute from ret_v -> actuals for checking for modifications to copies *)
+  let astate = add_returned_from_unknown callee_pname_opt ret_val actuals astate in
   let astate = PulseOperations.write_id (fst ret) (ret_val, hist) astate in
   let astate = Decompiler.add_call_source ret_val reason actuals astate in
   (* set to [false] if we think the procedure called does not behave "functionally", i.e. return the
@@ -151,9 +165,9 @@ let apply_callee tenv ({PathContext.timestamp} as path) ~caller_proc_desc callee
         |> SatUnsat.of_option |> SatUnsat.map PulseResult.join )
       x
   in
-  let map_call_result ~is_isl_error_prepost ~insecsl_sats ~insecsl_trace callee_prepost ~f =
+  let map_call_result ~is_isl_error_prepost ~insecsl_sats ~insecsl_trace callee_summary ~f =
     let sat_unsat, contradiction =
-      PulseInterproc.apply_prepost path ~is_isl_error_prepost ~insecsl_sats ~insecsl_trace callee_pname call_loc ~callee_prepost
+      PulseInterproc.apply_summary path ~is_isl_error_prepost ~insecsl_sats ~insecsl_trace callee_pname call_loc ~callee_summary
         ~captured_formals ~captured_actuals ~formals ~actuals astate
     in
     let sat_unsat =
@@ -188,16 +202,15 @@ let apply_callee tenv ({PathContext.timestamp} as path) ~caller_proc_desc callee
   | LatentAbortProgram {astate}
   | LatentInvalidAccess {astate} ->
       map_call_result ~is_isl_error_prepost:false ~insecsl_sats:[] ~insecsl_trace:None
-        (astate :> AbductiveDomain.t)
+        astate
         ~f:(fun subst astate_post_call ->
-          let* (astate_summary : AbductiveDomain.summary) =
+          let* (astate_summary : AbductiveDomain.Summary.t) =
             let open SatUnsat.Import in
-            AbductiveDomain.summary_of_post tenv
+            AbductiveDomain.Summary.of_post tenv
               (Procdesc.get_proc_name caller_proc_desc)
               (Procdesc.get_attributes caller_proc_desc)
               call_loc astate_post_call
             >>| AccessResult.ignore_leaks >>| AccessResult.of_abductive_summary_result
-            >>| AccessResult.of_summary
           in
           match callee_exec_state with
           | ContinueProgram _ | ExceptionRaised _ | ISLLatentMemoryError _ | InsecSLLeakageError _ ->
@@ -222,9 +235,9 @@ let apply_callee tenv ({PathContext.timestamp} as path) ~caller_proc_desc callee
                 (match diagnostic with
                 | InformationLeak {must_be_sat} -> 
                   let open SatUnsat.Import in 
-                  List.map must_be_sat ~f:(fun (astate:AbductiveDomain.summary) ->
-                  let callee_prepost = (astate :> AbductiveDomain.t) in
-                  PulseInterproc.apply_prepost path ~is_isl_error_prepost:false ~insecsl_sats:[] ~insecsl_trace:None callee_pname call_loc ~callee_prepost
+                  List.map must_be_sat ~f:(fun (astate:AbductiveDomain.Summary.t) ->
+                  let callee_summary = (astate :> AbductiveDomain.Summary.t) in
+                  PulseInterproc.apply_summary path ~is_isl_error_prepost:false ~insecsl_sats:[] ~insecsl_trace:None callee_pname call_loc ~callee_summary
                     ~captured_formals ~captured_actuals ~formals ~actuals astate_orig
                   |>
                   fun (sat_unsat,contradiction) -> 
@@ -249,7 +262,7 @@ let apply_callee tenv ({PathContext.timestamp} as path) ~caller_proc_desc callee
                                   astate_post
                           in
                           let x =
-                          (AbductiveDomain.summary_of_post tenv
+                          (AbductiveDomain.Summary.of_post tenv
                           (Procdesc.get_proc_name caller_proc_desc)
                           (Procdesc.get_attributes caller_proc_desc)
                           call_loc astate_post)
@@ -278,12 +291,14 @@ let apply_callee tenv ({PathContext.timestamp} as path) ~caller_proc_desc callee
                   L.d_printfln ~color:Red "issue is now manifest, emitting an error" ;
                   Sat
                     (AccessResult.of_error_f
-                       (Summary (ReportableErrorSummary {diagnostic; astate= astate_summary}))
+                       (Summary
+                          (ReportableError {diagnostic; astate= astate_post_call}, astate_summary)
+                       )
                        ~f:(fun _ ->
                          L.die InternalError
                            "LatentAbortProgram cannot be applied to non-fatal errors" ) )
               | `ISLDelay astate ->
-                  Sat (FatalError (Summary (ISLErrorSummary {astate}), [])) )
+                  Sat (FatalError (Summary (ISLError {astate}, astate_summary), [])) )
           | LatentInvalidAccess
               { address= address_callee
               ; must_be_valid= callee_access_trace, must_be_valid_reason
@@ -335,28 +350,28 @@ let apply_callee tenv ({PathContext.timestamp} as path) ~caller_proc_desc callee
                     Sat
                       (FatalError
                          ( Summary
-                             (ReportableErrorSummary
-                                { diagnostic=
-                                    AccessToInvalidAddress
-                                      { calling_context
-                                      ; invalid_address= address_caller
-                                      ; invalidation
-                                      ; invalidation_trace
-                                      ; access_trace
-                                      ; must_be_valid_reason }
-                                ; astate= astate_summary } )
+                             ( ReportableError
+                                 { diagnostic=
+                                     AccessToInvalidAddress
+                                       { calling_context
+                                       ; invalid_address= address_caller
+                                       ; invalidation
+                                       ; invalidation_trace
+                                       ; access_trace
+                                       ; must_be_valid_reason }
+                                 ; astate= astate_post_call }
+                             , astate_summary )
                          , [] ) ) ) ) )
-  | ISLLatentMemoryError astate ->
+  | ISLLatentMemoryError summary ->
       map_call_result ~is_isl_error_prepost:true ~insecsl_sats:[] ~insecsl_trace:None
-        (astate :> AbductiveDomain.t)
+        summary
         ~f:(fun _subst astate ->
           let open SatUnsat.Import in
-          AbductiveDomain.summary_of_post tenv
+          AbductiveDomain.Summary.of_post tenv
             (Procdesc.get_proc_name caller_proc_desc)
             (Procdesc.get_attributes caller_proc_desc)
             call_loc astate
           >>| AccessResult.ignore_leaks >>| AccessResult.of_abductive_summary_result
-          >>| AccessResult.of_summary
           >>| PulseResult.map ~f:(fun astate_summary -> ISLLatentMemoryError astate_summary) )
   | InsecSLLeakageError {astate; must_be_sat; trace} ->
     let open SatUnsat.Import in
@@ -364,9 +379,9 @@ let apply_callee tenv ({PathContext.timestamp} as path) ~caller_proc_desc callee
                 We do this so we can print it out for debugging purposes. Discard in future. *)
         (* FIXME: this duplicates much of map_call_result, and also reappears again in the Latent case above. Factor out that duplication. *)
         let ksats = 
-          (List.map must_be_sat ~f:(fun (astate:AbductiveDomain.summary) ->
-            let callee_prepost = (astate :> AbductiveDomain.t) in
-            PulseInterproc.apply_prepost path ~is_isl_error_prepost:false ~insecsl_sats:[] ~insecsl_trace:None callee_pname call_loc ~callee_prepost
+          (List.map must_be_sat ~f:(fun (astate:AbductiveDomain.Summary.t) ->
+            let callee_summary = (astate :> AbductiveDomain.Summary.t) in
+            PulseInterproc.apply_summary path ~is_isl_error_prepost:false ~insecsl_sats:[] ~insecsl_trace:None callee_pname call_loc ~callee_summary
               ~captured_formals ~captured_actuals ~formals ~actuals astate_orig
             |>
             (fun (sat_unsat,contradiction) -> 
@@ -392,7 +407,7 @@ let apply_callee tenv ({PathContext.timestamp} as path) ~caller_proc_desc callee
                             astate_post
                     in
                     let x =
-                    AbductiveDomain.summary_of_post tenv
+                    AbductiveDomain.Summary.of_post tenv
                     (Procdesc.get_proc_name caller_proc_desc)
                     (Procdesc.get_attributes caller_proc_desc)
                     call_loc astate_post
@@ -409,15 +424,14 @@ let apply_callee tenv ({PathContext.timestamp} as path) ~caller_proc_desc callee
         *)
         let sats = List.map ksats ~f:(fun sat_unsat -> match sat_unsat with | Unsat -> Unsat | Sat (_,b) -> Sat b) in    
         map_call_result ~is_isl_error_prepost:true ~insecsl_sats:sats ~insecsl_trace:(Some trace)
-        (astate :> AbductiveDomain.t)
+        (astate :> AbductiveDomain.Summary.t)
         ~f:(fun _subst astate ->
           let open SatUnsat.Import in
-          AbductiveDomain.summary_of_post tenv
+          AbductiveDomain.Summary.of_post tenv
             (Procdesc.get_proc_name caller_proc_desc)
             (Procdesc.get_attributes caller_proc_desc)
             call_loc astate
           >>| AccessResult.ignore_leaks >>| AccessResult.of_abductive_summary_result
-          >>| AccessResult.of_summary
           >>| PulseResult.map 
                 ~f:(fun astate -> (InsecSLLeakageError {astate; must_be_sat; trace})) )
 
@@ -513,8 +527,7 @@ let call tenv path ~caller_proc_desc ~(callee_data : (Procdesc.t * PulseSummary.
   | Some (callee_proc_desc, exec_states) ->
       call_aux tenv path caller_proc_desc call_loc callee_pname ret actuals call_kind
         (Procdesc.get_attributes callee_proc_desc)
-        (exec_states :> ExecutionDomain.t list)
-        astate
+        exec_states astate
   | None ->
       (* no spec found for some reason (unknown function, ...) *)
       L.d_printfln "No spec found for %a@\n" Procname.pp callee_pname ;
