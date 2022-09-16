@@ -192,26 +192,24 @@ let report_summary_error tenv proc_desc err_log ((access_error : AccessResult.er
       Some (ISLLatentMemoryError summary)
     
   | InsecSLError {astate=_astate; must_be_sat; location; address} -> (
-    let must_be_sat_summs = List.map 
+    (** must_be_sats need to be transformed into summaires with [!Summary.of_post] *)
+    let summary_of_error b =  match b with
+                              | `MemoryLeak (a,_,_,_,_) -> a
+                              | `PotentialInvalidAccessSummary (a,_,_,_) -> a
+                              | `ResourceLeak (a,_,_,_,_) -> a
+                              | `RetainCycle (a,_,_,_,_,_) -> a 
+    in
+    let must_be_sat_summs = List.map must_be_sat
       ~f:(AbductiveDomain.Summary.of_post tenv
                                           (Procdesc.get_proc_name proc_desc)
                                           (Procdesc.get_attributes proc_desc)
                                           location) 
-      must_be_sat 
     in
     match SatUnsat.reduce must_be_sat_summs with
     | Unsat -> None
     | Sat must_be_sat ->
       let must_be_sat = List.map must_be_sat
-          ~f:(fun res -> 
-                match res with 
-                | Result.Ok a -> a 
-                | Result.Error b ->
-                  match b with
-                  | `MemoryLeak (a,_,_,_,_) -> a
-                  | `PotentialInvalidAccessSummary (a,_,_,_) -> a
-                  | `ResourceLeak (a,_,_,_,_) -> a
-                  | `RetainCycle (a,_,_,_,_,_) -> a) 
+        ~f:(fun res -> match res with | Result.Ok a -> a | Result.Error b -> summary_of_error b)
       in 
       Some (InsecSLLeakageError {astate=summary; must_be_sat; trace=Trace.Immediate {location; history=address}}))
   | ReportableError {diagnostic} -> (
