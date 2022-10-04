@@ -3694,10 +3694,7 @@ and pulse_intraprocedural_only = !pulse_intraprocedural_only
 
 and pulse_isl = !pulse_isl
 
-and pulse_insecsl =
-  if (not !pulse_isl) then
-    L.die UserError "pulse-insecsl requires pulse-isl also to be set"
-  else !pulse_insecsl
+and pulse_insecsl = !pulse_insecsl
 
 and pulse_manifest_emp = !pulse_manifest_emp
 
